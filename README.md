@@ -22,7 +22,7 @@ Requirements: Rust (stable), `git`, `curl`. JDK 17 and GraalVM are downloaded
 automatically into `.tools/` on the first build.
 
 ```sh
-git clone --recursive https://github.com/<you>/kotatsu-desktop
+git clone --recursive https://github.com/justinsus1/kotatsu-desktop
 cd kotatsu-desktop
 ./build.sh            # builds everything and installs it to ~/.local
 ./build.sh --update   # pulls the latest sources first
