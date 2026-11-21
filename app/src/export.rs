@@ -271,7 +271,7 @@ fn to_jpeg(p: &Path) -> Result<Vec<u8>, String> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Ok(data);
     }
-    let img = image::load_from_memory(&data).map_err(|e| format!("{}: {e}", p.display()))?;
+    let img = crate::avif::decode_image(&data).map_err(|e| format!("{}: {e}", p.display()))?;
     let mut out = Vec::with_capacity(data.len() * 2);
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
     if is_grey(&img) {
@@ -420,7 +420,7 @@ fn container_head(gray: bool, title: &str, author: &str, toc: &[(String, usize, 
 /// XTG/XTH screen pages.
 pub fn render_page(p: &Path, o: &XtcOptions, gray: bool) -> Result<Vec<Vec<u8>>, String> {
     let data = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let img = image::load_from_memory(&data).map_err(|e| format!("{}: {e}", p.display()))?;
+    let img = crate::avif::decode_image(&data).map_err(|e| format!("{}: {e}", p.display()))?;
     drop(data);
     let mut g = img.into_luma8();
     if o.trim {

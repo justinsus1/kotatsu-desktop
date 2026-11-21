@@ -288,7 +288,7 @@ fn load(bridge: &Bridge, resizer: &mut fr::Resizer, job: &Job) -> Result<(Vec<Co
         },
     };
     let path = path.unwrap_or_default();
-    let img = match image::load_from_memory(&data) {
+    let img = match crate::avif::decode_image(&data) {
         Ok(i) => i,
         Err(e) => {
             // Corrupt cache entries must not stick around

@@ -1,4 +1,5 @@
 mod app;
+mod avif;
 mod books;
 mod epub;
 mod export;

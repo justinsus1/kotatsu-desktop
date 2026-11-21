@@ -13,6 +13,8 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 quick-xml = "0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+zenavif = "0.1.6"
+zenpixels = { version = "0.2.16", default-features = false }
 zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 
 [profile.release]

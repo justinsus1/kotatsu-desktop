@@ -24,6 +24,7 @@ A fast, lightweight Linux desktop manga reader, built on the same sources as
   serif/sans fonts, adjustable size, width and line spacing, and saved progress
 - **Phone sync**: library and reading progress sync with Kotatsu-Redo on Android through the same sync account (Settings → Phone sync)
 - Images are decoded off the UI thread, downscaled to screen size and kept within a memory budget
+- Page formats: JPEG, PNG, WebP, GIF and **AVIF** (pure-Rust decoder, no system libraries needed)
 
 ## Install (prebuilt, no compiling)
 
