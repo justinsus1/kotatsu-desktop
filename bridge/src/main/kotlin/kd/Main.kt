@@ -295,6 +295,29 @@ class Bridge(private val ctx: Ctx) {
 
 		"resolve" -> ctx.resolveLink(p.getString("url"))?.let(::mangaJson)
 
+		// Download any URL to a file, trying mirrors in order (books, covers)
+		"download" -> {
+			val urls = p.optJSONArray("urls")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: listOf(p.getString("url"))
+			val dest = File(p.getString("dest"))
+			var last: String? = null
+			for (url in urls) {
+				val req = Request.Builder().url(url).get().header("User-Agent", "Kotatsu-Desktop").build()
+				val ok = runCatching {
+					ctx.httpClient.newCall(req).await().use { resp ->
+						if (!resp.isSuccessful) error("HTTP ${resp.code}")
+						dest.parentFile?.mkdirs()
+						val tmp = File(dest.path + ".part")
+						resp.body.byteStream().use { input -> tmp.outputStream().use { input.copyTo(it, 64 * 1024) } }
+						if (!tmp.renameTo(dest)) error("rename failed")
+					}
+				}
+				if (ok.isSuccess) { last = null; break }
+				last = "$url: ${ok.exceptionOrNull()?.message}"
+			}
+			last?.let { error(it) }
+			JSONObject().put("path", dest.path)
+		}
+
 		// Plain HTTP for the app itself (phone sync), through the same client
 		"http" -> {
 			val body = p.str("body")?.toRequestBody("application/json".toMediaTypeOrNull())
@@ -349,6 +372,8 @@ fun main(args: Array<String>) {
 			}
 		}
 	}
+	// Let in-flight requests finish (bounded), then exit
+	runBlocking { withTimeoutOrNull(30_000) { jobs.values.toList().joinAll() } }
 	ctx.cookieJar.flush()
 	scope.cancel()
 	// OkHttp's idle threads would otherwise keep the process alive for a minute

@@ -20,6 +20,10 @@ pub enum ImgSrc {
     Url { source: String, url: String },
     Page { source: String, page: Page },
     File(PathBuf),
+    /// An image inside an EPUB
+    Zip { file: PathBuf, entry: String },
+    /// Plain web image, mirrors tried in order
+    Web { urls: Vec<String> },
 }
 
 struct Job {
@@ -252,28 +256,43 @@ impl Images {
 
 fn load(bridge: &Bridge, resizer: &mut fr::Resizer, job: &Job) -> Result<(Vec<ColorImage>, [u32; 2]), String> {
     let path = match &job.src {
-        ImgSrc::File(p) => p.clone(),
+        ImgSrc::Zip { .. } => None,
+        ImgSrc::Web { urls } => {
+            let p = cache_path(&job.key);
+            if !p.exists() {
+                bridge.call_blocking("download", json!({"urls": urls, "dest": p}))?;
+            }
+            Some(p)
+        }
+        ImgSrc::File(p) => Some(p.clone()),
         ImgSrc::Url { source, url } => {
             let p = cache_path(&job.key);
             if !p.exists() {
                 bridge.call_blocking("fetch", json!({"source": source, "url": url, "dest": p}))?;
             }
-            p
+            Some(p)
         }
         ImgSrc::Page { source, page } => {
             let p = cache_path(&job.key);
             if !p.exists() {
                 bridge.call_blocking("fetch", json!({"source": source, "page": page, "dest": p}))?;
             }
-            p
+            Some(p)
         }
     };
-    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let data = match &path {
+        Some(p) => std::fs::read(p).map_err(|e| e.to_string())?,
+        None => match &job.src {
+            ImgSrc::Zip { file, entry } => crate::epub::read_file_entry(file, entry)?,
+            _ => unreachable!(),
+        },
+    };
+    let path = path.unwrap_or_default();
     let img = match image::load_from_memory(&data) {
         Ok(i) => i,
         Err(e) => {
             // Corrupt cache entries must not stick around
-            if !matches!(job.src, ImgSrc::File(_)) {
+            if !matches!(job.src, ImgSrc::File(_) | ImgSrc::Zip { .. }) {
                 let _ = std::fs::remove_file(&path);
             }
             return Err(format!("decode: {e}"));

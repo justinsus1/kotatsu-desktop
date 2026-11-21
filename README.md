@@ -17,6 +17,9 @@ A fast, lightweight Linux desktop manga reader, built on the same sources as
 - Library with new-chapter checks, reading history with "continue"
 - Reader: webtoon (continuous scroll) and paged (LTR / RTL) modes, preloading, keyboard controls
 - Offline chapter downloads
+- **Books (EPUB)**: a shelf for your `.epub` files (`~/Books`, or drag files onto the window), a built-in catalogue of
+  ~70,000 free public-domain books from Project Gutenberg to download, and a reader with contents, dark/sepia/light themes,
+  serif/sans fonts, adjustable size, width and line spacing, and saved progress
 - **Phone sync**: library and reading progress sync with Kotatsu-Redo on Android through the same sync account (Settings → Phone sync)
 - Images are decoded off the UI thread, downscaled to screen size and kept within a memory budget
 
@@ -44,6 +47,17 @@ Then run `kotatsu-desktop` or launch **Kotatsu** from your app launcher.
 | M | switch reader mode |
 | F / F11 | fullscreen |
 | Tab / H | hide the toolbar |
+| Esc | back |
+
+## Book reader keys
+
+| Key | Action |
+|---|---|
+| Space / PgDn, Shift+Space / PgUp, ↑ ↓ | scroll |
+| ← / → (or P / N) | previous / next chapter |
+| T | table of contents |
+| + / − | font size |
+| F | fullscreen |
 | Esc | back |
 
 ## Phone sync

@@ -9,8 +9,23 @@ pub const COVER_RATIO: f32 = 1.45;
 const TEXT_H: f32 = 38.0;
 const GAP: f32 = 14.0;
 
+pub const BOOK: &str = "_BOOK";
+pub const WEB_BOOK: &str = "_GUTENBERG";
+
 pub fn cover_key(m: &Manga) -> String {
-    format!("c:{}", m.cover.as_deref().unwrap_or(""))
+    match m.source.as_str() {
+        BOOK => format!("b:{}:{}", m.url, m.cover.as_deref().unwrap_or("")),
+        _ => format!("c:{}", m.cover.as_deref().unwrap_or("")),
+    }
+}
+
+/// Where a card's cover comes from: a parser source, an EPUB entry, or plain web mirrors.
+pub fn cover_src(m: &Manga, url: String) -> ImgSrc {
+    match m.source.as_str() {
+        BOOK => ImgSrc::Zip { file: m.url.clone().into(), entry: url },
+        WEB_BOOK => ImgSrc::Web { urls: crate::books::mirrors(&url) },
+        _ => ImgSrc::Url { source: m.source.clone(), url },
+    }
 }
 
 /// Paint a cover image (cropped to fill) into `rect`.
@@ -23,8 +38,7 @@ pub fn paint_cover(ui: &Ui, images: &mut Images, m: &Manga, rect: Rect) {
     };
     let ppp = ui.ctx().pixels_per_point();
     let want = (rect.width() * ppp).ceil() as u32;
-    let src = m.source.clone();
-    match images.get(&cover_key(m), || ImgSrc::Url { source: src, url }, want) {
+    match images.get(&cover_key(m), || cover_src(m, url), want) {
         Img::Ready { tiles, size } if tiles.len() == 1 => {
             // object-fit: cover
             let (w, h) = (size[0] as f32, size[1] as f32);
@@ -82,9 +96,8 @@ pub fn manga_grid(
                 let i = r * cols + c;
                 if let Some(m) = items.get(i) {
                     if let Some(url) = m.cover.clone() {
-                        let src = m.source.clone();
                         let w = (card_w * ui.ctx().pixels_per_point()) as u32;
-                        images.prefetch(&cover_key(m), || ImgSrc::Url { source: src, url }, w);
+                        images.prefetch(&cover_key(m), || cover_src(m, url), w);
                     }
                 }
             }

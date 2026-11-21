@@ -14,6 +14,7 @@ use std::time::Instant;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Library,
+    Books,
     History,
     Browse,
     Search,
@@ -93,6 +94,8 @@ pub enum View {
     Catalog(CatalogState),
     Details(DetailsState),
     Reader(ReaderState),
+    Books,
+    Book(crate::books::BookReader),
 }
 
 pub enum Nav {
@@ -107,6 +110,7 @@ pub struct App {
     pub images: Images,
     pub store: Store,
     pub downloads: Downloads,
+    pub shelf: crate::books::Shelf,
     sources: Vec<Source>,
     sources_p: Option<Pending>,
     source_filter: String,
@@ -136,7 +140,9 @@ impl App {
         let images = Images::new(bridge.clone(), ctx.clone(), store.settings.texture_budget_mb);
         let downloads = Downloads::new(bridge.clone(), ctx.clone());
         let sources_p = Some(bridge.call("sources", json!({})));
+        let shelf = crate::books::Shelf::new(store.book_cache.clone());
         App {
+            shelf,
             bridge,
             images,
             store,
@@ -166,9 +172,13 @@ impl App {
 
     fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
+        if tab == Tab::Books {
+            self.rescan_books();
+        }
         self.stack.clear();
         self.stack.push(match tab {
             Tab::Library => View::Library,
+            Tab::Books => View::Books,
             Tab::History => View::History,
             Tab::Browse => View::Browse,
             Tab::Search => View::Search(SearchState { query: String::new(), results: vec![] }),
@@ -235,6 +245,7 @@ fn setup_style(ctx: &egui::Context) {
             break;
         }
     }
+    crate::books::add_fonts(&mut fonts);
     ctx.set_fonts(fonts);
     ctx.set_visuals(egui::Visuals::dark());
     ctx.global_style_mut(|s| {
@@ -256,9 +267,10 @@ impl eframe::App for App {
         }
         self.poll_background();
         self.poll_sync();
+        self.poll_books(&ctx);
         self.autotest_step();
 
-        let in_reader = matches!(self.stack.last(), Some(View::Reader(_)));
+        let in_reader = matches!(self.stack.last(), Some(View::Reader(_) | View::Book(_)));
         if !in_reader {
             self.top_bar(ui);
         }
@@ -284,6 +296,8 @@ impl eframe::App for App {
                 View::Catalog(s) => self.catalog_ui(ui, s),
                 View::Details(s) => self.details_ui(ui, s),
                 View::Reader(s) => self.reader_ui(ui, s),
+                View::Books => self.books_ui(ui),
+                View::Book(s) => self.book_reader_ui(ui, s),
             })
             .inner;
         if let View::Reader(r) = &mut view {
@@ -296,7 +310,7 @@ impl eframe::App for App {
         match nav {
             Nav::None => {
                 self.stack.push(view);
-                if back && self.stack.len() > 1 && !matches!(self.stack.last(), Some(View::Reader(_))) {
+                if back && self.stack.len() > 1 && !matches!(self.stack.last(), Some(View::Reader(_) | View::Book(_))) {
                     self.stack.pop();
                 }
             }
@@ -491,6 +505,17 @@ impl App {
 
     fn autotest_step(&mut self) {
         let Some((src, step)) = self.autotest.clone() else { return };
+        if let Some(path) = src.strip_prefix("BOOK:") {
+            self.stack.push(View::Book(crate::books::BookReader::new(path.into())));
+            self.autotest = None;
+            return;
+        }
+        if src == "GET" {
+            self.set_tab(Tab::Books);
+            self.shelf.tab = crate::books::ShelfTab::Get;
+            self.autotest = None;
+            return;
+        }
         let next = match (step, self.stack.last()) {
             (0, _) if !self.sources.is_empty() => {
                 if let Some(s) = self.sources.iter().find(|s| s.name == src).cloned() {
@@ -529,6 +554,7 @@ impl App {
                 ui.add_space(12.0);
                 let tabs = [
                     (Tab::Library, "Library"),
+                    (Tab::Books, "Books"),
                     (Tab::History, "History"),
                     (Tab::Browse, "Browse"),
                     (Tab::Search, "Search"),

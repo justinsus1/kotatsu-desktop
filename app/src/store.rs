@@ -26,6 +26,21 @@ pub struct Settings {
     pub preload_pages: usize,
     pub ui_scale: f32,
     pub reader_gap: f32,
+    pub books_dir: String,
+    pub book_font: f32,
+    pub book_width: f32,
+    pub book_line: f32,
+    pub book_serif: bool,
+    pub book_theme: BookTheme,
+    pub book_lang: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BookTheme {
+    #[default]
+    Dark,
+    Sepia,
+    Light,
 }
 
 impl Default for Settings {
@@ -40,6 +55,13 @@ impl Default for Settings {
             preload_pages: 4,
             ui_scale: 1.0,
             reader_gap: 0.0,
+            books_dir: dirs::home_dir().unwrap_or_default().join("Books").to_string_lossy().into_owned(),
+            book_font: 19.0,
+            book_width: 720.0,
+            book_line: 1.5,
+            book_serif: true,
+            book_theme: BookTheme::Dark,
+            book_lang: "en".into(),
         }
     }
 }
@@ -89,6 +111,14 @@ impl Default for SyncConfig {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BookProgress {
+    pub spine: usize,
+    pub block: usize,
+    pub percent: f32,
+    pub at: i64,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Store {
@@ -105,6 +135,10 @@ pub struct Store {
     pub hist_removed: HashMap<String, i64>,
     /// manga id -> the manga exactly as the sync server has it (keeps the phone's tag ids)
     pub remote_manga: HashMap<i64, serde_json::Value>,
+    /// book path -> reading position
+    pub books: HashMap<String, BookProgress>,
+    /// last library scan, so the shelf shows instantly at start
+    pub book_cache: Vec<crate::epub::BookMeta>,
     #[serde(skip)]
     dirty: bool,
 }

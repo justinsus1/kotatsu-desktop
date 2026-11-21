@@ -1,4 +1,6 @@
 mod app;
+mod books;
+mod epub;
 mod bridge;
 mod downloads;
 mod images;
