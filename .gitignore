@@ -4,3 +4,4 @@ bridge/build/
 bridge/.gradle/
 bridge/.kotlin/
 *.log
+dist/

@@ -112,6 +112,16 @@ impl Default for SyncConfig {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Catalog {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub pass: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BookProgress {
     pub spine: usize,
     pub block: usize,
@@ -139,6 +149,8 @@ pub struct Store {
     pub books: HashMap<String, BookProgress>,
     /// last library scan, so the shelf shows instantly at start
     pub book_cache: Vec<crate::epub::BookMeta>,
+    /// OPDS catalogues (Calibre content server etc.)
+    pub catalogs: Vec<Catalog>,
     #[serde(skip)]
     dirty: bool,
 }

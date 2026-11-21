@@ -103,6 +103,7 @@ class Ctx(dataDir: File) : MangaLoaderContext() {
 	override val parsers: ParsersBundle get() = ParsersBundleImpl
 	private val instances = ConcurrentHashMap<String, MangaParser>()
 	private val domainOverrides = ConcurrentHashMap<String, String>()
+	val hostAuth = ConcurrentHashMap<String, String>()
 
 	override val httpClient: OkHttpClient = OkHttpClient.Builder()
 		.cookieJar(cookieJar)
@@ -111,6 +112,13 @@ class Ctx(dataDir: File) : MangaLoaderContext() {
 			val src = chain.request().tag(MangaSource::class.java)
 			val p = (src as? ParserMangaSource)?.let { parser(it.name) }
 			p?.intercept(chain) ?: chain.proceed(chain.request())
+		}
+		.addInterceptor { chain ->
+			val req = chain.request()
+			val auth = hostAuth[req.url.host + ":" + req.url.port] ?: hostAuth[req.url.host]
+			if (auth != null && req.header("Authorization") == null) {
+				chain.proceed(req.newBuilder().header("Authorization", auth).build())
+			} else chain.proceed(req)
 		}
 		.addInterceptor { chain ->
 			val req = chain.request()
@@ -280,7 +288,7 @@ class Bridge(private val ctx: Ctx) {
 			val dest = File(p.getString("dest"))
 			val req = Request.Builder().url(url).get()
 				.headers(parser.getRequestHeaders())
-				.header("Accept", "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8")
+				.header("Accept", "image/webp,image/png,image/jpeg,*/*;q=0.8")
 				.tag(MangaSource::class.java, src)
 				.build()
 			ctx.httpClient.newCall(req).await().use { resp ->
@@ -316,6 +324,14 @@ class Bridge(private val ctx: Ctx) {
 			}
 			last?.let { error(it) }
 			JSONObject().put("path", dest.path)
+		}
+
+		// Credentials for a host (OPDS catalogues such as a Calibre server); sent on every request to it
+		"setAuth" -> {
+			val host = p.getString("host")
+			val header = p.str("header")
+			if (header.isNullOrEmpty()) ctx.hostAuth.remove(host) else ctx.hostAuth[host] = header
+			true
 		}
 
 		// Plain HTTP for the app itself (phone sync), through the same client

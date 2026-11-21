@@ -17,23 +17,40 @@ A fast, lightweight Linux desktop manga reader, built on the same sources as
 - Library with new-chapter checks, reading history with "continue"
 - Reader: webtoon (continuous scroll) and paged (LTR / RTL) modes, preloading, keyboard controls
 - Offline chapter downloads
-- **Books (EPUB)**: a shelf for your `.epub` files (`~/Books`, or drag files onto the window), a built-in catalogue of
-  ~70,000 free public-domain books from Project Gutenberg to download, and a reader with contents, dark/sepia/light themes,
+- **Books (EPUB)**: a shelf for your `.epub` files (`~/Books`, `~/Calibre Library`, or drag files onto the window),
+  ~70,000 free public-domain books from Project Gutenberg to download, your own **Calibre** library (or Kavita, Komga,
+  COPS – any OPDS catalogue) to browse, search and download from, and a reader with contents, dark/sepia/light themes,
   serif/sans fonts, adjustable size, width and line spacing, and saved progress
 - **Phone sync**: library and reading progress sync with Kotatsu-Redo on Android through the same sync account (Settings → Phone sync)
 - Images are decoded off the UI thread, downscaled to screen size and kept within a memory budget
 
-## Build
+## Install (prebuilt, no compiling)
+
+Linux x86_64:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/justinsus1/kotatsu-desktop/main/install.sh | bash
+```
+
+This downloads the latest release into `~/.local` (it takes seconds). Run it again to update; uninstall with
+`... | bash -s -- --uninstall`. You can also grab `kotatsu-desktop-linux-x86_64.tar.gz` from the
+[Releases](https://github.com/justinsus1/kotatsu-desktop/releases) page yourself.
+
+## Build from source
 
 Requirements: Rust (stable), `git`, `curl`. JDK 17 and GraalVM are downloaded
-automatically into `.tools/` on the first build.
+automatically into `.tools/` on the first build. The first build takes a while (mostly GraalVM compiling the
+source helper); builds from source are tuned for your CPU.
 
 ```sh
 git clone --recursive https://github.com/justinsus1/kotatsu-desktop
 cd kotatsu-desktop
 ./build.sh            # builds everything and installs it to ~/.local
 ./build.sh --update   # pulls the latest sources first
+./build.sh --portable --package   # what releases use: any x86-64 CPU, writes dist/*.tar.gz
 ```
+
+Releases are built by GitHub Actions when a `v*` tag is pushed.
 
 Then run `kotatsu-desktop` or launch **Kotatsu** from your app launcher.
 

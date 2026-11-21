@@ -5,6 +5,7 @@ mod bridge;
 mod downloads;
 mod images;
 mod model;
+mod opds;
 mod reader;
 mod store;
 mod sync;

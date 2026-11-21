@@ -76,6 +76,11 @@ pub struct Shelf {
     filter: String,
     pub tab: ShelfTab,
     store: GutenbergState,
+    /// None = Project Gutenberg, Some(i) = OPDS catalogue i
+    source: Option<usize>,
+    opds: OpdsState,
+    adding: Option<crate::store::Catalog>,
+    auth_sent: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -86,7 +91,17 @@ pub enum ShelfTab {
 
 impl Shelf {
     pub fn new(cached: Vec<BookMeta>) -> Self {
-        Shelf { books: cached, scan: None, filter: String::new(), tab: ShelfTab::Mine, store: GutenbergState::default() }
+        Shelf {
+            books: cached,
+            scan: None,
+            filter: String::new(),
+            tab: ShelfTab::Mine,
+            store: GutenbergState::default(),
+            source: None,
+            opds: OpdsState::default(),
+            adding: None,
+            auth_sent: false,
+        }
     }
 }
 
@@ -117,7 +132,14 @@ impl App {
         let bridge = self.bridge.clone();
         std::thread::spawn(move || {
             let _ = std::fs::create_dir_all(&dir);
-            let mut out: Vec<BookMeta> = epub::scan(&dir)
+            let mut files = epub::scan(&dir);
+            // A local Calibre library is picked up automatically
+            if let Some(cal) = dirs::home_dir().map(|h| h.join("Calibre Library")) {
+                if cal.is_dir() && !dir.starts_with(&cal) && !cal.starts_with(&dir) {
+                    files.extend(epub::scan(&cal));
+                }
+            }
+            let mut out: Vec<BookMeta> = files
                 .into_iter()
                 .filter_map(|p| known.get(&p).cloned().or_else(|| epub::read_meta(&p).ok()))
                 .collect();
@@ -154,6 +176,13 @@ impl App {
             }
         }
         self.poll_gutenberg();
+        self.poll_opds();
+        if !self.shelf.auth_sent {
+            self.shelf.auth_sent = true;
+            for c in self.store.catalogs.clone() {
+                self.send_auth(&c);
+            }
+        }
     }
 
     pub fn books_ui(&mut self, ui: &mut Ui) -> Nav {
@@ -205,7 +234,43 @@ impl App {
                     nav = Nav::Push(View::Book(BookReader::new(metas[i].path.clone())));
                 }
             }
-            ShelfTab::Get => nav = self.gutenberg_ui(ui),
+            ShelfTab::Get => {
+                ui.horizontal(|ui| {
+                    ui.label("Source:");
+                    let names: Vec<String> = self.store.catalogs.iter().map(|c| c.name.clone()).collect();
+                    let cur = match self.shelf.source {
+                        Some(i) => names.get(i).cloned().unwrap_or_default(),
+                        None => "Project Gutenberg".into(),
+                    };
+                    let mut sel = self.shelf.source;
+                    egui::ComboBox::from_id_salt("bsrc").selected_text(cur).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut sel, None, "Project Gutenberg");
+                        for (i, n) in names.iter().enumerate() {
+                            ui.selectable_value(&mut sel, Some(i), n);
+                        }
+                    });
+                    if sel != self.shelf.source {
+                        self.shelf.source = sel;
+                        self.shelf.opds = OpdsState::default();
+                    }
+                    if ui.button("+ Add catalogue").on_hover_text("Calibre content server, Kavita, Komga, COPS… (OPDS)").clicked() {
+                        self.shelf.adding = Some(crate::store::Catalog { name: "Calibre".into(), url: "http://localhost:8080/opds".into(), ..Default::default() });
+                    }
+                    if let Some(i) = self.shelf.source {
+                        if ui.button("Remove").clicked() {
+                            self.store.catalogs.remove(i);
+                            self.store.touch();
+                            self.shelf.source = None;
+                            self.shelf.opds = OpdsState::default();
+                        }
+                    }
+                });
+                self.add_catalog_window(ui);
+                nav = match self.shelf.source {
+                    None => self.gutenberg_ui(ui),
+                    Some(i) => self.opds_ui(ui, i),
+                };
+            }
         }
         nav
     }
@@ -936,4 +1001,288 @@ fn layout_block(ctx: &egui::Context, ui: &Ui, b: &Block, width: f32, s: &crate::
         );
     }
     Some(ui.painter().layout_job(job))
+}
+
+// ------------------------------------------------------------------ OPDS catalogues (Calibre etc.)
+
+#[derive(Default)]
+pub struct OpdsState {
+    /// (title, url) of the feeds opened so far; last = current
+    stack: Vec<(String, String)>,
+    title: String,
+    entries: Vec<crate::opds::Entry>,
+    next: Option<String>,
+    search: Option<String>,
+    pending: Option<(String, Pending)>,
+    osd: Option<Pending>,
+    query: String,
+    error: Option<String>,
+    downloading: HashMap<String, Pending>,
+}
+
+fn host_keys(url: &str) -> Vec<String> {
+    let https = url.starts_with("https://");
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let hostport = rest.split(['/', '?']).next().unwrap_or("");
+    let hostport = hostport.rsplit('@').next().unwrap_or(hostport);
+    match hostport.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => vec![format!("{h}:{p}")],
+        _ => vec![format!("{hostport}:{}", if https { 443 } else { 80 })],
+    }
+}
+
+#[cfg(test)]
+pub fn test_b64(s: &str) -> String {
+    b64(s)
+}
+
+fn b64(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+impl App {
+    fn send_auth(&self, c: &crate::store::Catalog) {
+        let header = if c.user.is_empty() { String::new() } else { format!("Basic {}", b64(&format!("{}:{}", c.user, c.pass))) };
+        for h in host_keys(&c.url) {
+            self.bridge.call("setAuth", json!({"host": h, "header": header}));
+        }
+    }
+
+    fn add_catalog_window(&mut self, ui: &mut Ui) {
+        let Some(mut c) = self.shelf.adding.take() else { return };
+        let mut open = true;
+        let mut save = false;
+        egui::Window::new("Add OPDS catalogue").collapsible(false).resizable(false).open(&mut open).show(ui.ctx(), |ui| {
+            ui.label(RichText::new("Calibre: run the content server (Preferences → Sharing over the net), then use http://<computer>:8080/opds").small().weak());
+            egui::Grid::new("addcat").num_columns(2).show(ui, |ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut c.name);
+                ui.end_row();
+                ui.label("URL");
+                ui.add(egui::TextEdit::singleline(&mut c.url).desired_width(320.0));
+                ui.end_row();
+                ui.label("Username");
+                ui.text_edit_singleline(&mut c.user);
+                ui.end_row();
+                ui.label("Password");
+                ui.add(egui::TextEdit::singleline(&mut c.pass).password(true));
+                ui.end_row();
+            });
+            ui.label(RichText::new("Optional. Basic auth only (for Calibre with a password, set the server's authentication mode to \"basic\").").small().weak());
+            if ui.add_enabled(!c.url.trim().is_empty(), egui::Button::new("Add")).clicked() {
+                save = true;
+            }
+        });
+        if save {
+            c.url = c.url.trim().to_string();
+            if !c.url.contains("://") {
+                c.url = format!("http://{}", c.url);
+            }
+            self.send_auth(&c);
+            self.store.catalogs.push(c);
+            self.store.touch();
+            self.shelf.source = Some(self.store.catalogs.len() - 1);
+            self.shelf.opds = OpdsState::default();
+        } else if open {
+            self.shelf.adding = Some(c);
+        }
+    }
+
+    fn opds_open(&mut self, title: String, url: String, push: bool) {
+        let st = &mut self.shelf.opds;
+        if push {
+            st.stack.push((title, url.clone()));
+        }
+        st.entries.clear();
+        st.next = None;
+        st.error = None;
+        st.pending = Some((url.clone(), self.bridge.call("http", json!({"method": "GET", "url": url, "headers": {"Accept": "application/atom+xml"}}))));
+    }
+
+    fn poll_opds(&mut self) {
+        let st = &mut self.shelf.opds;
+        if let Some((url, p)) = &st.pending {
+            if let Some(r) = p.ready().cloned() {
+                let url = url.clone();
+                st.pending = None;
+                let res = r.and_then(|v| {
+                    match v["code"].as_u64().unwrap_or(0) {
+                        200..=299 => {}
+                        401 => return Err("The catalogue needs a username and password (or they are wrong).".into()),
+                        c => return Err(format!("HTTP {c}")),
+                    }
+                    crate::opds::parse_feed(v["body"].as_str().unwrap_or(""), &url)
+                });
+                match res {
+                    Ok(f) => {
+                        if st.entries.is_empty() {
+                            st.title = f.title;
+                        }
+                        st.entries.extend(f.entries);
+                        st.next = f.next;
+                        if let Some(s) = f.search {
+                            st.search = Some(if s.contains("://") || s.contains("{searchTerms}") { crate::opds::join(&url, &s) } else { s });
+                        }
+                    }
+                    Err(e) => st.error = Some(e),
+                }
+            }
+        }
+        if let Some(r) = st.osd.as_ref().and_then(|p| p.ready().cloned()) {
+            st.osd = None;
+            let base = st.search.clone().unwrap_or_default();
+            st.search = r.ok().and_then(|v| crate::opds::parse_opensearch(v["body"].as_str().unwrap_or(""), &base));
+            if st.search.is_some() && !st.query.trim().is_empty() {
+                let q = st.query.clone();
+                self.opds_search(&q);
+            }
+            return;
+        }
+        let done: Vec<String> = st.downloading.iter().filter(|(_, p)| p.ready().is_some()).map(|(k, _)| k.clone()).collect();
+        let mut msgs = vec![];
+        for k in done {
+            if let Some(p) = st.downloading.remove(&k) {
+                msgs.push(match p.ready().unwrap() {
+                    Ok(_) => "Book downloaded".to_string(),
+                    Err(e) => format!("Download failed: {e}"),
+                });
+            }
+        }
+        if !msgs.is_empty() {
+            for m in msgs {
+                self.toast(m);
+            }
+            self.rescan_books();
+        }
+    }
+
+    fn opds_search(&mut self, q: &str) {
+        let Some(t) = self.shelf.opds.search.clone() else { return };
+        if t.contains("{searchTerms}") {
+            let url = crate::opds::search_url(&t, q.trim());
+            self.opds_open(format!("Search: {}", q.trim()), url, true);
+        } else if self.shelf.opds.osd.is_none() {
+            // OpenSearch description: fetch it first, then search
+            self.shelf.opds.osd = Some(self.bridge.call("http", json!({"method": "GET", "url": t})));
+        }
+    }
+
+    fn opds_ui(&mut self, ui: &mut Ui, idx: usize) -> Nav {
+        let mut nav = Nav::None;
+        let Some(cat) = self.store.catalogs.get(idx).cloned() else { return nav };
+        if self.shelf.opds.stack.is_empty() {
+            self.opds_open(cat.name.clone(), cat.url.clone(), true);
+        }
+        let mut back = None;
+        let mut search = None;
+        ui.horizontal(|ui| {
+            let st = &mut self.shelf.opds;
+            if st.stack.len() > 1 && ui.button("←").clicked() {
+                back = Some(());
+            }
+            ui.strong(st.stack.last().map(|s| s.0.clone()).unwrap_or_default());
+            if st.search.is_some() {
+                let r = ui.add(egui::TextEdit::singleline(&mut st.query).hint_text("Search catalogue").desired_width(240.0));
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !st.query.trim().is_empty() {
+                    search = Some(st.query.clone());
+                }
+            }
+            if st.pending.is_some() || st.osd.is_some() {
+                ui.spinner();
+            }
+        });
+        if back.is_some() {
+            self.shelf.opds.stack.pop();
+            if let Some((t, u)) = self.shelf.opds.stack.last().cloned() {
+                self.opds_open(t, u, false);
+            }
+        }
+        if let Some(q) = search {
+            self.opds_search(&q);
+        }
+        ui.separator();
+        if let Some(e) = self.shelf.opds.error.clone() {
+            if error_box(ui, &e) {
+                if let Some((t, u)) = self.shelf.opds.stack.last().cloned() {
+                    self.opds_open(t, u, false);
+                }
+            }
+            return nav;
+        }
+        let entries = self.shelf.opds.entries.clone();
+        let navs: Vec<&crate::opds::Entry> = entries.iter().filter(|e| e.epub.is_none() && e.nav.is_some()).collect();
+        let books: Vec<&crate::opds::Entry> = entries.iter().filter(|e| e.epub.is_some()).collect();
+        if entries.is_empty() && self.shelf.opds.pending.is_none() {
+            ui.label("This catalogue page is empty (or has no EPUB books).");
+        }
+        let mut open = None;
+        if !navs.is_empty() {
+            let max_h = if books.is_empty() { f32::INFINITY } else { 160.0 };
+            egui::ScrollArea::vertical().id_salt("opds-nav").max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                for e in &navs {
+                    if ui.add(egui::Button::new(format!("📁 {}", e.title)).frame(false)).clicked() {
+                        open = Some((e.title.clone(), e.nav.clone().unwrap()));
+                    }
+                }
+            });
+            if !books.is_empty() {
+                ui.separator();
+            }
+        }
+        if let Some((t, u)) = open {
+            self.opds_open(t, u, true);
+            return nav;
+        }
+        if books.is_empty() {
+            return nav;
+        }
+        let tag = |e: &crate::opds::Entry| format!("[cat-{}]", &crate::images::hash_str(&format!("{}{}", cat.url, if e.id.is_empty() { e.epub.as_deref().unwrap_or("") } else { &e.id }))[..8]);
+        let owned: HashSet<String> = self.shelf.books.iter().filter_map(|b| b.path.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+        let tags: Vec<String> = books.iter().map(|e| tag(e)).collect();
+        let is_owned = |t: &str| owned.iter().any(|n| n.contains(t));
+        let items: Vec<Manga> = books
+            .iter()
+            .map(|e| Manga { title: e.title.clone(), url: e.epub.clone().unwrap_or_default(), cover: e.cover.clone(), authors: vec![e.author.clone()], source: WEB_BOOK.into(), ..Default::default() })
+            .collect();
+        let downloading: HashSet<String> = self.shelf.opds.downloading.keys().cloned().collect();
+        let badge = |i: usize| {
+            if is_owned(&tags[i]) {
+                Some("✓".to_string())
+            } else if downloading.contains(&tags[i]) {
+                Some("…".to_string())
+            } else {
+                None
+            }
+        };
+        let out = manga_grid(ui, &mut self.images, ("opds", idx), &items, &badge);
+        if out.near_end && self.shelf.opds.pending.is_none() {
+            if let Some(n) = self.shelf.opds.next.take() {
+                let st = &mut self.shelf.opds;
+                st.pending = Some((n.clone(), self.bridge.call("http", json!({"method": "GET", "url": n, "headers": {"Accept": "application/atom+xml"}}))));
+            }
+        }
+        if let Some(i) = out.clicked {
+            let e = books[i];
+            let t = &tags[i];
+            if let Some(b) = self.shelf.books.iter().find(|b| b.path.to_string_lossy().contains(t.as_str())) {
+                nav = Nav::Push(View::Book(BookReader::new(b.path.clone())));
+            } else if !self.shelf.opds.downloading.contains_key(t) {
+                let dest = books_dir(self).join(sanitize(&cat.name)).join(format!("{} - {} {}.epub", sanitize(&e.title), sanitize(&e.author), t));
+                let p = self.bridge.call("download", json!({"urls": [e.epub.clone().unwrap()], "dest": dest}));
+                self.shelf.opds.downloading.insert(t.clone(), p);
+                self.toast(format!("Downloading “{}”…", e.title));
+            }
+        }
+        nav
+    }
 }

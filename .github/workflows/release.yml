@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # Older Ubuntu = older glibc, so the binaries run on more distros
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        id: jdk17
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: "25"
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+
+      - name: Build
+        env:
+          JAVA17_HOME: ${{ steps.jdk17.outputs.path }}
+        run: ./build.sh --portable --package --no-install
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kotatsu-desktop-linux-x86_64
+          path: dist/kotatsu-desktop-linux-x86_64.tar.gz
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/kotatsu-desktop-linux-x86_64.tar.gz
+          generate_release_notes: true
