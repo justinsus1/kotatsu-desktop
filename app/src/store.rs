@@ -33,6 +33,9 @@ pub struct Settings {
     pub book_serif: bool,
     pub book_theme: BookTheme,
     pub book_lang: String,
+    pub export_dir: String,
+    pub export_format: crate::export::Format,
+    pub export_xtc: crate::export::XtcOptions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -62,6 +65,13 @@ impl Default for Settings {
             book_serif: true,
             book_theme: BookTheme::Dark,
             book_lang: "en".into(),
+            export_dir: dirs::download_dir()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
+                .join("Kotatsu")
+                .to_string_lossy()
+                .into_owned(),
+            export_format: Default::default(),
+            export_xtc: Default::default(),
         }
     }
 }

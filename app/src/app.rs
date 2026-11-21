@@ -1,5 +1,6 @@
 use crate::bridge::{Bridge, Pending};
 use crate::downloads::{self, Downloads};
+use crate::export;
 use crate::images::Images;
 use crate::model::*;
 use crate::reader::ReaderState;
@@ -128,6 +129,16 @@ pub struct App {
     last_sync_try: Option<Instant>,
     /// KD_AUTOTEST=SOURCE: open that source, its first manga, and read it (for smoke tests)
     autotest: Option<(String, u8)>,
+    export_dialog: Option<ExportDialog>,
+    export_job: Option<export::Running>,
+}
+
+/// "Export" dialog for one manga's downloaded chapters (reading order).
+pub struct ExportDialog {
+    manga: Manga,
+    downloaded: Vec<Chapter>,
+    unread: Vec<Chapter>,
+    only_unread: bool,
 }
 
 impl App {
@@ -163,6 +174,8 @@ impl App {
             sync_status: String::new(),
             last_sync_try: None,
             autotest: std::env::var("KD_AUTOTEST").ok().map(|s| (s, 0)),
+            export_dialog: None,
+            export_job: None,
         }
     }
 
@@ -199,6 +212,23 @@ impl App {
                     Err(e) => self.toast(format!("Failed to load sources: {e}")),
                 }
                 self.sources_p = None;
+            }
+        }
+        // Export progress
+        if let Some(job) = &mut self.export_job {
+            let mut done = None;
+            while let Ok(msg) = job.rx.try_recv() {
+                match msg {
+                    export::Msg::Progress(d, n) => job.progress = (d, n),
+                    export::Msg::Done(r) => done = Some(r),
+                }
+            }
+            if let Some(r) = done {
+                self.export_job = None;
+                match r {
+                    Ok(p) => self.toast(format!("Exported {}", p.display())),
+                    Err(e) => self.toast(format!("Export failed: {e}")),
+                }
             }
         }
         // Library update check results
@@ -277,7 +307,7 @@ impl eframe::App for App {
 
         // Global back navigation
         let typing = ctx.memory(|m| m.focused().is_some());
-        let back = ctx.input(|i| {
+        let back = self.export_dialog.is_none() && ctx.input(|i| {
             i.pointer.button_pressed(egui::PointerButton::Extra1)
                 || (!typing && (i.key_pressed(Key::Escape) || i.key_pressed(Key::Backspace)))
                 || (i.modifiers.alt && i.key_pressed(Key::ArrowLeft))
@@ -325,6 +355,8 @@ impl eframe::App for App {
             }
             Nav::Replace(v) => self.stack.push(v),
         }
+
+        self.export_dialog_ui(&ctx);
 
         if let Some((msg, t)) = &self.toast {
             let age = t.elapsed().as_secs_f32();
@@ -510,6 +542,25 @@ impl App {
             self.autotest = None;
             return;
         }
+        // EXPORT: open the first downloaded manga and its export dialog
+        if src == "EXPORT" {
+            match self.stack.last() {
+                Some(View::Details(d)) if d.manga.chapters.as_ref().is_some_and(|c| !c.is_empty()) => {
+                    let m = d.manga.clone();
+                    self.open_export(&m, None);
+                    self.autotest = None;
+                }
+                Some(View::Details(_)) => {}
+                _ => {
+                    if let Some(m) = downloads::downloaded_manga().into_iter().next() {
+                        self.stack.push(View::Details(DetailsState::new(m, false)));
+                    } else {
+                        self.autotest = None;
+                    }
+                }
+            }
+            return;
+        }
         if src == "GET" {
             self.set_tab(Tab::Books);
             self.shelf.tab = crate::books::ShelfTab::Get;
@@ -572,6 +623,14 @@ impl App {
                     }
                     if let Some((title, ch, d, t)) = &self.downloads.progress.lock().unwrap().current {
                         ui.label(RichText::new(format!("⬇ {title} {ch} {d}/{t}")).small());
+                    }
+                    if let Some(job) = &self.export_job {
+                        if ui.small_button("✕").on_hover_text("Cancel export").clicked() {
+                            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let (d, n) = job.progress;
+                        ui.add(egui::ProgressBar::new(d as f32 / n.max(1) as f32).desired_width(90.0));
+                        ui.label(RichText::new(format!("📤 {} {d}/{n}", job.title)).small());
                     }
                 });
             });
@@ -1014,6 +1073,9 @@ impl App {
                             }
                         });
                     }
+                    if !chapters.is_empty() && ui.button("📤 Export").on_hover_text("Save downloaded chapters as CBZ or for the Xteink X4 (XTC)").clicked() {
+                        self.open_export(&m, st.branch.clone());
+                    }
                     if !m.public_url.is_empty() && ui.button("Web").on_hover_text("Open in browser").clicked() {
                         open_url(&m.public_url);
                     }
@@ -1133,6 +1195,122 @@ impl App {
             }
         }
         nav
+    }
+
+    // ------------------------------------------------------------------ export
+
+    /// Open the export dialog with the downloaded chapters of `m` (in the
+    /// branch being viewed, if several translations are downloaded).
+    fn open_export(&mut self, m: &Manga, branch: Option<Option<String>>) {
+        let chapters: &[Chapter] = m.chapters.as_deref().unwrap_or(&[]);
+        let mut downloaded: Vec<Chapter> = chapters.iter().filter(|c| downloads::is_downloaded(m, c.id)).cloned().collect();
+        let mut branches: Vec<Option<String>> = vec![];
+        for c in &downloaded {
+            if !branches.contains(&c.branch) {
+                branches.push(c.branch.clone());
+            }
+        }
+        if branches.len() > 1 {
+            let mut all: Vec<Option<String>> = vec![];
+            for c in chapters {
+                if !all.contains(&c.branch) {
+                    all.push(c.branch.clone());
+                }
+            }
+            let b = branch.unwrap_or_else(|| default_branch(&all));
+            downloaded.retain(|c| c.branch == b);
+        }
+        let unread = downloaded.iter().filter(|c| !self.store.is_read(m, c.id)).cloned().collect();
+        self.export_dialog = Some(ExportDialog { manga: m.slim(), downloaded, unread, only_unread: false });
+    }
+
+    fn export_dialog_ui(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.export_dialog else { return };
+        let s = &mut self.store.settings;
+        let before = (s.export_dir.clone(), s.export_format, serde_json::to_string(&s.export_xtc).unwrap_or_default());
+        let mut start = false;
+        let mut close = false;
+        let busy = self.export_job.is_some();
+        let resp = egui::Modal::new(egui::Id::unique("export_dialog")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.heading("Export");
+            ui.label(RichText::new(&d.manga.title).strong());
+            ui.add_space(4.0);
+            if d.downloaded.is_empty() {
+                ui.label("No chapters of this manga are downloaded yet. Download some with ⬇ first.");
+                ui.add_space(8.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut d.only_unread, false, format!("All downloaded ({})", d.downloaded.len()));
+                ui.add_enabled_ui(!d.unread.is_empty(), |ui| {
+                    ui.radio_value(&mut d.only_unread, true, format!("Unread only ({})", d.unread.len()));
+                });
+            });
+            ui.add_space(6.0);
+            ui.strong("Format");
+            for f in [export::Format::Xtc, export::Format::Xtch, export::Format::Cbz] {
+                ui.radio_value(&mut s.export_format, f, f.label());
+            }
+            if s.export_format != export::Format::Cbz {
+                ui.add_space(6.0);
+                ui.strong("Pages");
+                let o = &mut s.export_xtc;
+                egui::ComboBox::from_id_salt("export_layout").width(330.0).selected_text(o.layout.label()).show_ui(ui, |ui| {
+                    for l in export::Layout::ALL {
+                        ui.selectable_value(&mut o.layout, l, l.label());
+                    }
+                });
+                ui.checkbox(&mut o.rtl, "Manga order (right page of a spread first)");
+                ui.checkbox(&mut o.trim, "Crop white margins");
+                ui.checkbox(&mut o.dither, "Dither (smoother shading)");
+                ui.label(
+                    RichText::new("Landscape: hold the X4 sideways. Copy the file to the SD card or send it with CrossPoint's Wi-Fi file transfer.")
+                        .small()
+                        .weak(),
+                );
+            } else {
+                ui.checkbox(&mut s.export_xtc.rtl, "Mark as right-to-left manga");
+            }
+            ui.add_space(6.0);
+            ui.strong("Save to");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut s.export_dir).desired_width(340.0));
+                if ui.button("Open").on_hover_text("Open this folder").clicked() {
+                    let _ = std::fs::create_dir_all(&s.export_dir);
+                    open_url(&s.export_dir);
+                }
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let n = if d.only_unread { d.unread.len() } else { d.downloaded.len() };
+                let label = if busy { "Another export is running…".to_string() } else { format!("Export {n} chapter{}", if n == 1 { "" } else { "s" }) };
+                if ui.add_enabled(!busy && n > 0, egui::Button::new(RichText::new(label).strong()).fill(ui.visuals().selection.bg_fill)).clicked() {
+                    start = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        let after = (s.export_dir.clone(), s.export_format, serde_json::to_string(&s.export_xtc).unwrap_or_default());
+        if before != after {
+            self.store.touch();
+        }
+        if start {
+            let d = self.export_dialog.take().unwrap();
+            let s = &self.store.settings;
+            let chapters = if d.only_unread { d.unread } else { d.downloaded };
+            let dir = std::path::PathBuf::from(&s.export_dir);
+            let job = export::Job { manga: d.manga, chapters, dir, format: s.export_format, opts: s.export_xtc };
+            self.export_job = Some(export::spawn(job, ctx.clone()));
+            self.toast("Export started");
+        } else if close || resp.should_close() {
+            self.export_dialog = None;
+        }
     }
 
     // ------------------------------------------------------------------ downloads

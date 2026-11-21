@@ -17,6 +17,7 @@ A fast, lightweight Linux desktop manga reader, built on the same sources as
 - Library with new-chapter checks, reading history with "continue"
 - Reader: webtoon (continuous scroll) and paged (LTR / RTL) modes, preloading, keyboard controls
 - Offline chapter downloads
+- **Export** downloaded chapters as **CBZ** or straight to **XTC/XTCH for the Xteink X4** e-reader (see below)
 - **Books (EPUB)**: a shelf for your `.epub` files (`~/Books`, `~/Calibre Library`, or drag files onto the window),
   ~70,000 free public-domain books from Project Gutenberg to download, your own **Calibre** library (or Kavita, Komga,
   COPS – any OPDS catalogue) to browse, search and download from, and a reader with contents, dark/sepia/light themes,
@@ -93,6 +94,23 @@ cd app
 python3 tests/mock_sync_server.py 8765 &
 KD_SYNC_URL=http://127.0.0.1:8765 KOTATSU_BRIDGE=$PWD/../bridge/build/native/kotatsu-bridge cargo test -- --ignored
 ```
+
+## Export (CBZ / Xteink X4)
+
+On a manga page, press **📤 Export** to save its downloaded chapters (all, or only unread) as one file:
+
+- **XTC**: Xteink X4 format, black & white (1-bit), fastest page turns
+- **XTCH**: Xteink X4 format with 4 greys, nicer art, slower page turns
+- **CBZ**: JPEG pages in one folder per chapter, plus `ComicInfo.xml`, for XTC.js, CBZ-capable firmware, or any comic reader
+
+XTC/XTCH pages are pre-rendered at 480×800, so stock firmware and CrossPoint open them without a converter. Page options:
+
+- **Landscape, overlapping thirds** (default): each page is cut into strips that overlap, and you hold the X4 sideways. Small text stays readable on the 4.3" screen. Tall webtoon pages get as many strips as they need.
+- **Landscape, halves** or **Portrait, whole page**
+- Two-page spreads are split into single pages, right page first when **manga order** is on
+- White margins are cropped, washed-out scans are contrast-stretched, and pages are Floyd–Steinberg dithered
+
+Copy the file to the X4's SD card, or upload it with CrossPoint's Wi-Fi file transfer. Files go to `~/Downloads/Kotatsu` by default; you can change that in the dialog.
 
 ## Layout
 
