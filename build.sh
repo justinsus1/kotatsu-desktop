@@ -24,9 +24,16 @@ if [[ ! -x "$TOOLS/jdk17/bin/java" ]]; then
 fi
 if [[ ! -x "$TOOLS/graalvm/bin/native-image" ]]; then
   echo "==> downloading GraalVM"
-  URL=$(curl -fsSL https://api.github.com/repos/graalvm/graalvm-ce-builds/releases \
-    | grep -o 'https://[^"]*graalvm-community-jdk-25[^"]*linux-x64_bin.tar.gz' | head -1)
-  curl -fsSL "$URL" -o "$TOOLS/graal.tgz"
+  # Read the whole response first: piping curl into `head` makes curl fail with
+  # "failure writing output" once head exits, which kills the script under pipefail
+  RELEASES=$(curl -fsSL https://api.github.com/repos/graalvm/graalvm-ce-builds/releases)
+  URL=$(grep -o 'https://[^"]*graalvm-community-jdk-25[^"]*linux-x64_bin\.tar\.gz' <<<"$RELEASES" || true)
+  URL=${URL%%$'\n'*}
+  if [[ -z "$URL" ]]; then
+    echo "Could not find a GraalVM download (GitHub API rate limit?). Try again later." >&2
+    exit 1
+  fi
+  curl -fL --progress-bar "$URL" -o "$TOOLS/graal.tgz"
   mkdir -p "$TOOLS/graalvm" && tar xzf "$TOOLS/graal.tgz" -C "$TOOLS/graalvm" --strip-components=1 && rm "$TOOLS/graal.tgz"
 fi
 
