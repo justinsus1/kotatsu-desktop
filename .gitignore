@@ -1,0 +1,6 @@
+.tools/
+app/target/
+bridge/build/
+bridge/.gradle/
+bridge/.kotlin/
+*.log
