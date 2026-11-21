@@ -17,6 +17,7 @@ A fast, lightweight Linux desktop manga reader, built on the same sources as
 - Library with new-chapter checks, reading history with "continue"
 - Reader: webtoon (continuous scroll) and paged (LTR / RTL) modes, preloading, keyboard controls
 - Offline chapter downloads
+- **Phone sync**: library and reading progress sync with Kotatsu-Redo on Android through the same sync account (Settings → Phone sync)
 - Images are decoded off the UI thread, downscaled to screen size and kept within a memory budget
 
 ## Build
@@ -45,6 +46,23 @@ Then run `kotatsu-desktop` or launch **Kotatsu** from your app launcher.
 | Tab / H | hide the toolbar |
 | Esc | back |
 
+## Phone sync
+
+1. On the phone: Kotatsu → Settings → Services → Synchronization, and sign in (or register) on a sync server.
+2. On the desktop: Settings → Phone sync, enter the same server, email and password, then press **Log in**.
+
+It syncs at startup, every 10 minutes, when you leave the reader, and when you press **Sync now**. Only rows changed on the
+desktop are sent, so the phone's newer progress is never overwritten. The default server is `https://sync.kotatsuredo.app`
+(the phone app's default).
+
+Sync test against a local mock server:
+
+```sh
+cd app
+python3 tests/mock_sync_server.py 8765 &
+KD_SYNC_URL=http://127.0.0.1:8765 KOTATSU_BRIDGE=$PWD/../bridge/build/native/kotatsu-bridge cargo test -- --ignored
+```
+
 ## Layout
 
 ```
@@ -56,7 +74,7 @@ parsers/  kotatsu-parsers-redo (git submodule)
 ## Limitations
 
 - Sources that need a Cloudflare check, a login, or a WebView don't work yet
-- No sync with the phone app yet
+- Sync covers library and history; categories are flattened into one library on desktop (desktop additions go into your first phone category)
 
 ## License
 

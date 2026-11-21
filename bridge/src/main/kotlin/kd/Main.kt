@@ -5,6 +5,7 @@ import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -293,6 +294,18 @@ class Bridge(private val ctx: Ctx) {
 		}
 
 		"resolve" -> ctx.resolveLink(p.getString("url"))?.let(::mangaJson)
+
+		// Plain HTTP for the app itself (phone sync), through the same client
+		"http" -> {
+			val body = p.str("body")?.toRequestBody("application/json".toMediaTypeOrNull())
+			val req = Request.Builder().url(p.getString("url"))
+				.method(p.optString("method", "GET"), body)
+				.header("User-Agent", "Kotatsu-Desktop")
+			p.optJSONObject("headers")?.let { h -> h.keys().forEach { k -> req.header(k, h.getString(k)) } }
+			ctx.httpClient.newCall(req.build()).await().use { resp ->
+				JSONObject().put("code", resp.code).put("body", resp.body.string())
+			}
+		}
 
 		else -> error("Unknown method $m")
 	}

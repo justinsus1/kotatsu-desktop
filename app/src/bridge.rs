@@ -189,6 +189,10 @@ impl Bridge {
         p.ready().cloned().unwrap_or_else(|| Err("no response".into()))
     }
 
+    pub fn repaint(&self) {
+        (self.repaint)();
+    }
+
     pub fn cancel(&self, p: &Pending) {
         if p.ready().is_none() && p.id != 0 {
             self.send(0, "cancel", json!({"id": p.id}));

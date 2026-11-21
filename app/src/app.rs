@@ -117,6 +117,11 @@ pub struct App {
     updates: Vec<(String, Pending)>,
     lib_filter: String,
     applied_scale: f32,
+    sync_job: Option<crossbeam_channel::Receiver<crate::sync::Outcome>>,
+    login_job: Option<crossbeam_channel::Receiver<Result<String, String>>>,
+    sync_password: String,
+    sync_status: String,
+    last_sync_try: Option<Instant>,
     /// KD_AUTOTEST=SOURCE: open that source, its first manga, and read it (for smoke tests)
     autotest: Option<(String, u8)>,
 }
@@ -146,6 +151,11 @@ impl App {
             updates: vec![],
             lib_filter: String::new(),
             applied_scale: 0.0,
+            sync_job: None,
+            login_job: None,
+            sync_password: String::new(),
+            sync_status: String::new(),
+            last_sync_try: None,
             autotest: std::env::var("KD_AUTOTEST").ok().map(|s| (s, 0)),
         }
     }
@@ -245,6 +255,7 @@ impl eframe::App for App {
             ctx.set_zoom_factor(self.applied_scale);
         }
         self.poll_background();
+        self.poll_sync();
         self.autotest_step();
 
         let in_reader = matches!(self.stack.last(), Some(View::Reader(_)));
@@ -277,6 +288,10 @@ impl eframe::App for App {
             .inner;
         if let View::Reader(r) = &mut view {
             r.on_leave_check(&mut self.store);
+            // Leaving the reader: push progress to the phone soon
+            if !matches!(nav, Nav::None) && self.last_sync_try.is_some_and(|t| t.elapsed().as_secs() > 30) {
+                self.start_sync();
+            }
         }
         match nav {
             Nav::None => {
@@ -321,6 +336,159 @@ impl eframe::App for App {
 }
 
 impl App {
+    pub fn start_sync(&mut self) {
+        if self.sync_job.is_some() {
+            return;
+        }
+        let Some(token) = self.store.sync.token.clone() else { return };
+        self.last_sync_try = Some(Instant::now());
+        let snap = crate::sync::Snapshot {
+            url: self.store.sync.url.clone(),
+            token,
+            favourites: self.store.favourites.clone(),
+            history: self.store.history.clone(),
+            fav_removed: self.store.fav_removed.clone(),
+            hist_removed: self.store.hist_removed.clone(),
+            remote_manga: self.store.remote_manga.clone(),
+        };
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let bridge = self.bridge.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::sync::run(&bridge, snap));
+            bridge.repaint();
+        });
+        self.sync_job = Some(rx);
+        self.sync_status = "Syncing…".into();
+    }
+
+    fn poll_sync(&mut self) {
+        // Auto sync: at start, then every 10 minutes
+        if self.store.sync.auto
+            && self.store.sync.token.is_some()
+            && self.sources_p.is_none()
+            && self.last_sync_try.is_none_or(|t| t.elapsed().as_secs() > 600)
+        {
+            self.start_sync();
+        }
+        if let Some(out) = self.sync_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.sync_job = None;
+            let (mut added, mut removed, mut progress) = (0, 0, 0);
+            for op in out.ops {
+                match op {
+                    crate::sync::Op::AddFav(m, added_ms) => {
+                        if !self.store.is_favourite(&m) {
+                            self.store.favourites.push(store::Favourite { manga: m, added: added_ms / 1000, known_chapters: 0, new_chapters: 0 });
+                            added += 1;
+                        }
+                    }
+                    crate::sync::Op::RemoveFav(key) => {
+                        self.store.favourites.retain(|f| f.manga.key() != key);
+                        removed += 1;
+                    }
+                    crate::sync::Op::SetHistory(h) => {
+                        let key = h.manga.key();
+                        self.store.history.retain(|x| x.manga.key() != key);
+                        self.store.history.push(h);
+                        progress += 1;
+                    }
+                    crate::sync::Op::RemoveHistory(key) => self.store.history.retain(|x| x.manga.key() != key),
+                }
+            }
+            self.store.history.sort_by(|a, b| b.at.cmp(&a.at));
+            self.store.favourites.sort_by(|a, b| b.added.cmp(&a.added));
+            self.store.remote_manga.extend(out.remote_manga);
+            // Tombstones only need to outlive a few syncs
+            let cutoff = (store::now() - 30 * 86400) * 1000;
+            self.store.fav_removed.retain(|_, t| *t > cutoff);
+            self.store.hist_removed.retain(|_, t| *t > cutoff);
+            if out.unauthorized {
+                self.store.sync.token = None;
+            }
+            match out.error {
+                Some(e) => {
+                    self.sync_status = format!("Sync failed: {e}");
+                    self.toast(self.sync_status.clone());
+                }
+                None => {
+                    self.store.sync.last_sync = store::now();
+                    self.sync_status = format!("Synced: +{added} / -{removed} library, {progress} progress updates, {} sent", out.sent);
+                    if added + removed + progress > 0 {
+                        self.toast(self.sync_status.clone());
+                    }
+                }
+            }
+            self.store.touch();
+        }
+        if let Some(r) = self.login_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.login_job = None;
+            match r {
+                Ok(token) => {
+                    self.store.sync.token = Some(token);
+                    self.store.touch();
+                    self.sync_status = "Logged in".into();
+                    self.start_sync();
+                }
+                Err(e) => self.sync_status = format!("Login failed: {e}"),
+            }
+        }
+    }
+
+    fn sync_settings_ui(&mut self, ui: &mut Ui) {
+        ui.heading("Phone sync");
+        ui.label(RichText::new("Uses the same sync account as Kotatsu on your phone (phone: Settings → Services → Synchronization). Syncs library and reading progress.").small().weak());
+        let logged_in = self.store.sync.token.is_some();
+        egui::Grid::new("sync").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+            ui.label("Server");
+            ui.add_enabled(!logged_in, egui::TextEdit::singleline(&mut self.store.sync.url).desired_width(280.0));
+            ui.end_row();
+            ui.label("Email");
+            ui.add_enabled(!logged_in, egui::TextEdit::singleline(&mut self.store.sync.email).desired_width(280.0));
+            ui.end_row();
+            if !logged_in {
+                ui.label("Password");
+                ui.add(egui::TextEdit::singleline(&mut self.sync_password).password(true).desired_width(280.0));
+                ui.end_row();
+            }
+        });
+        ui.horizontal(|ui| {
+            if logged_in {
+                if ui.add_enabled(self.sync_job.is_none(), egui::Button::new("Sync now")).clicked() {
+                    self.start_sync();
+                }
+                if ui.checkbox(&mut self.store.sync.auto, "Sync automatically").changed() {
+                    self.store.touch();
+                }
+                if ui.button("Log out").clicked() {
+                    self.store.sync.token = None;
+                    self.store.touch();
+                    self.sync_status = "Logged out".into();
+                }
+            } else {
+                let can = self.login_job.is_none() && !self.store.sync.email.is_empty() && !self.sync_password.is_empty();
+                if ui.add_enabled(can, egui::Button::new("Log in")).clicked() {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    let (bridge, url, email, pw) = (self.bridge.clone(), self.store.sync.url.clone(), self.store.sync.email.clone(), std::mem::take(&mut self.sync_password));
+                    std::thread::spawn(move || {
+                        let _ = tx.send(crate::sync::login(&bridge, &url, &email, &pw));
+                        bridge.repaint();
+                    });
+                    self.login_job = Some(rx);
+                    self.sync_status = "Logging in…".into();
+                    self.store.touch();
+                }
+            }
+            if self.sync_job.is_some() || self.login_job.is_some() {
+                ui.spinner();
+            }
+        });
+        if !self.sync_status.is_empty() {
+            ui.label(RichText::new(&self.sync_status).small());
+        }
+        if self.store.sync.last_sync > 0 {
+            ui.label(RichText::new(format!("Last synced {}", time_ago(self.store.sync.last_sync))).small().weak());
+        }
+    }
+
     fn autotest_step(&mut self) {
         let Some((src, step)) = self.autotest.clone() else { return };
         let next = match (step, self.stack.last()) {
@@ -436,7 +604,10 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading("History");
             if !self.store.history.is_empty() && ui.small_button("Clear").clicked() {
-                self.store.history.clear();
+                let t = store::now() * 1000;
+                for h in std::mem::take(&mut self.store.history) {
+                    self.store.hist_removed.insert(h.manga.key(), t);
+                }
                 self.store.touch();
             }
         });
@@ -458,7 +629,7 @@ impl App {
                 p.text(
                     egui::pos2(tx, rect.top() + 34.0),
                     egui::Align2::LEFT_TOP,
-                    format!("{} · page {}", h.chapter_label, h.page + 1),
+                    if h.chapter_label.is_empty() { format!("page {} · {:.0}% read", h.page + 1, h.percent * 100.0) } else { format!("{} · page {}", h.chapter_label, h.page + 1) },
                     egui::FontId::proportional(13.0),
                     ui.visuals().text_color(),
                 );
@@ -779,7 +950,7 @@ impl App {
                     if !chapters.is_empty() {
                         let (label, idx, page) = match &last {
                             Some(h) => match chapters.iter().position(|c| c.id == h.chapter_id) {
-                                Some(i) => (format!("▶ Continue {}", h.chapter_label), i, h.page),
+                                Some(i) => (format!("▶ Continue {}", chapters[i].label()), i, h.page),
                                 None => ("▶ Read".into(), 0, 0),
                             },
                             None => {
@@ -990,6 +1161,11 @@ impl App {
     // ------------------------------------------------------------------ settings
 
     fn settings_ui(&mut self, ui: &mut Ui) -> Nav {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.settings_inner(ui));
+        Nav::None
+    }
+
+    fn settings_inner(&mut self, ui: &mut Ui) {
         ui.heading("Settings");
         ui.separator();
         let s = &mut self.store.settings;
@@ -1036,11 +1212,13 @@ impl App {
                 self.toast("Image cache cleared");
             }
         });
+        ui.separator();
+        self.sync_settings_ui(ui);
+        ui.separator();
         ui.label(RichText::new(format!("Data: {}", store::data_dir().display())).small().weak());
         ui.label(RichText::new(format!("{} sources loaded", self.sources.len())).small().weak());
         ui.add_space(10.0);
         ui.label(RichText::new("Reader keys: ←/→ or A/D page · Space/PgDn scroll · N/P next/prev chapter · M switch mode · F fullscreen · Esc back").small());
-        Nav::None
     }
 }
 

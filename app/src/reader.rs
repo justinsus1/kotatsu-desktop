@@ -310,7 +310,10 @@ impl App {
         if !st.loaded {
             return;
         }
-        self.store.record(&st.manga, ch.id, &ch.label(), st.page);
+        let chs = st.chapters();
+        let n = st.page_count().max(1);
+        let percent = if chs.is_empty() { 0.0 } else { ((st.ch as f32) + (st.page + 1) as f32 / n as f32) / chs.len() as f32 };
+        self.store.record(&st.manga, ch.id, &ch.label(), st.page, percent.clamp(0.0, 1.0), chs.len() as i32);
         if st.page + 1 >= st.page_count() {
             self.store.mark_read(&st.manga, ch.id);
         }

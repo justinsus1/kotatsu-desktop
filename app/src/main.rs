@@ -5,6 +5,7 @@ mod images;
 mod model;
 mod reader;
 mod store;
+mod sync;
 mod widgets;
 
 fn main() -> eframe::Result {

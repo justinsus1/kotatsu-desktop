@@ -62,6 +62,31 @@ pub struct HistoryEntry {
     pub chapter_label: String,
     pub page: usize,
     pub at: i64,
+    /// Overall progress 0..1 (shown by the phone app)
+    #[serde(default)]
+    pub percent: f32,
+    #[serde(default = "minus_one")]
+    pub chapters: i32,
+}
+
+fn minus_one() -> i32 {
+    -1
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncConfig {
+    pub url: String,
+    pub email: String,
+    pub token: Option<String>,
+    pub last_sync: i64,
+    pub auto: bool,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        SyncConfig { url: "https://sync.kotatsuredo.app".into(), email: String::new(), token: None, last_sync: 0, auto: true }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -73,6 +98,13 @@ pub struct Store {
     /// manga key -> read chapter ids
     pub read: HashMap<String, HashSet<i64>>,
     pub pinned_sources: Vec<String>,
+    pub sync: SyncConfig,
+    /// manga key -> when it was removed from the library (ms), so removals sync
+    pub fav_removed: HashMap<String, i64>,
+    /// manga key -> when its history was removed (ms)
+    pub hist_removed: HashMap<String, i64>,
+    /// manga id -> the manga exactly as the sync server has it (keeps the phone's tag ids)
+    pub remote_manga: HashMap<i64, serde_json::Value>,
     #[serde(skip)]
     dirty: bool,
 }
@@ -123,7 +155,9 @@ impl Store {
     pub fn toggle_favourite(&mut self, m: &Manga) {
         if let Some(i) = self.favourites.iter().position(|f| f.manga.source == m.source && f.manga.id == m.id) {
             self.favourites.remove(i);
+            self.fav_removed.insert(m.key(), now() * 1000);
         } else {
+            self.fav_removed.remove(&m.key());
             let n = m.chapters.as_ref().map_or(0, Vec::len);
             self.favourites.insert(0, Favourite { manga: m.slim(), added: now(), known_chapters: n, new_chapters: 0 });
         }
@@ -134,8 +168,9 @@ impl Store {
         self.history.iter().find(|h| h.manga.source == m.source && h.manga.id == m.id)
     }
 
-    pub fn record(&mut self, m: &Manga, chapter_id: i64, label: &str, page: usize) {
-        let entry = HistoryEntry { manga: m.slim(), chapter_id, chapter_label: label.to_string(), page, at: now() };
+    pub fn record(&mut self, m: &Manga, chapter_id: i64, label: &str, page: usize, percent: f32, chapters: i32) {
+        let entry = HistoryEntry { manga: m.slim(), chapter_id, chapter_label: label.to_string(), page, at: now(), percent, chapters };
+        self.hist_removed.remove(&m.key());
         self.history.retain(|h| !(h.manga.source == m.source && h.manga.id == m.id));
         self.history.insert(0, entry);
         self.history.truncate(500);
