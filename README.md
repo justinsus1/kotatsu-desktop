@@ -1,4 +1,4 @@
-## Disclaimer
+# Disclaimer
 This project is fully vibe coded
 
 # Kotatsu Desktop
