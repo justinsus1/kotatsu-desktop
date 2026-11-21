@@ -1,3 +1,6 @@
+## Disclaimer
+This project is fully vibe coded
+
 # Kotatsu Desktop
 
 A fast, lightweight Linux desktop manga reader, built on the same sources as
